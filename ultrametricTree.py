@@ -1,11 +1,10 @@
 import os
-from random import random
+from sre_parse import Verbose
 import torch
 import numpy as np 
 import matplotlib.pyplot as plt 
 import seaborn as sns 
 from utils.autoencoder import trainAE
-from utils.functions import icc
 
 # find the current path
 path = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +28,7 @@ fontsize = 16
 #     Ultrametric trees 
 #---------------------------
 
-def get_data( M, N, k, gamma=.2, rng=None, anc=None):
+def UltrametricTree_data( M, N, k, gamma=.2, rng=None, anc=None):
     '''Create Ultrametric tree data
     Input: 
         M: the number of data (rows)
@@ -55,7 +54,7 @@ def get_data( M, N, k, gamma=.2, rng=None, anc=None):
         sim_data[ m, :] = sim
     return sim_data
 
-def fig_2b( seed=42):
+def fig_2b( seed=2020):
     '''Intra class corr
         Ignore the random encoder 
     '''
@@ -66,29 +65,31 @@ def fig_2b( seed=42):
     dims = [ 300, 600]
     IN_corrs = []
     AE_corrs = []
-    M, N = 5000, 300
+    M, N = 100, 300
     gamma = .6
     for k in ks: 
         # decide the ancestor
         # decide number of ancestor 
         p = int(N / k)
         # get descent: data 
-        anc = (rng.rand(p) < .5 )
+        anc = (rng.rand(p) < .5 ) * 1.
         # generate input data 
-        x = get_data( M, N, k, gamma, rng=rng, anc=anc)
+        x = UltrametricTree_data( M, N, k, gamma, rng=rng, anc=anc)
         # train an AE
-        model = trainAE( x, dims)
+        # model = trainAE( x, dims, 
+        #                     SparsityReg=0, SparistyPro=.1, 
+        #                     Verbose=True)
         # calculate the correlation
         IN_corr, AE_corr = [], []
-        for _ in  range(M):
-            id0, id1 = rng.choice( 100, size=2)
-            x0, x1 = x[id0], x[id1]
-            z0 = model.get_latent(x0.reshape([1,-1]))
-            z1 = model.get_latent(x1.reshape([1,-1]))
+        for _ in  range(10*M):
+            x_test = UltrametricTree_data( 2, N, k, gamma, rng=rng, anc=anc)
+            x0, x1 = x_test[0, :], x_test[1, :]
+            # z0 = model.get_latent(x0.reshape([1,-1]))
+            # z1 = model.get_latent(x1.reshape([1,-1]))
             IN_corr.append( np.corrcoef( x0, x1)[ 0, 1])
-            AE_corr.append( np.corrcoef( z0, z1)[ 0, 1])
+            #AE_corr.append( np.corrcoef( z0, z1)[ 0, 1])
         IN_corrs.append( np.mean(IN_corr))
-        AE_corrs.append( np.mean(AE_corr))
+        #AE_corrs.append( np.mean(AE_corr))
     print( IN_corrs)
     print( AE_corrs)
     plt.figure( figsize=( 4, 4))
@@ -97,6 +98,7 @@ def fig_2b( seed=42):
     plt.legend( [ 'input', 'autoencoder'], fontsize=fontsize)
     plt.xlabel( 'Braching ratio', fontsize=fontsize)
     plt.ylabel( 'Intra class corr.', fontsize=fontsize)
+    plt.tight_layout()
     plt.savefig( f'{path}/figures/fig_2b', dpi=dpi)
 
 if __name__ == '__main__':

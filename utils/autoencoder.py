@@ -16,19 +16,21 @@ eps_ = 1e-8
 #   Loss functions 
 #----------------------------
 
-def MSEsparse( x, x_hat, z, model, l2_reg=1e-5, spa_reg=5, p=.1):
+def MSEsparse( x, x_hat, z, spa_reg=5, p=.1):
     '''Mean sqaure error sparse
-    Reference
-    https://www.mathworks.com/help/deeplearning/ref/trainautoencoder.html
 
     Error = 1/N ∑_i∑_j (x_ij - x_hat_ij)^2  
                 + β1 l2norm(W)
                 + β2 Sparity
+    
+    Note that l2 regularize can be implemented
+    in the optimizer using weight decay:
+    https://pytorch.org/docs/stable/optim.html
+
     '''
-    mse = (x - x_hat).pow(2).sum(dim=1).mean(dim=0)
-    l2_norm = sum( p.pow(2).sum() for p in model.parameters())
+    mse = (x - x_hat).pow(2).mean()
     sparsity = SparsityLoss( z, p)
-    return mse + l2_reg*l2_norm + spa_reg*sparsity
+    return mse + spa_reg*sparsity
 
 def SparsityLoss( z, p_tar, thershold=.5):
     '''
@@ -38,11 +40,18 @@ def SparsityLoss( z, p_tar, thershold=.5):
 
     We use the binary value to estimate the activate 
     proportion: p_hat  = 1/N ∑_i Z_i(x)
+
+    Reference
+    https://web.stanford.edu/class/cs294a/sparseAutoencoder.pdf
     '''
-    p_hat = (z >= thershold).float().mean(dim=1)
-    p     = (torch.ones_like(p_hat) * p_tar)
-    return (p * ( (p+eps_).log() -  (p_hat+eps_).log()) + \
-           (1-p) * ( (1-p+eps_).log() -  (1-p_hat+eps_).log())).sum()
+    # get the target tesnor 
+    rho_hat = torch.sigmoid(z).mean(dim=1)
+    rho     = torch.ones_like( rho_hat) * p_tar
+
+    # calculate kld 
+    kld1 = rho * ((rho+eps_).log() - (rho_hat+eps_).log())
+    kld2 = (1-rho) * ((1-rho+eps_).log() - (1-rho_hat+eps_).log())
+    return (kld1 + kld2).mean()
 
 #---------------------------------
 #    AutoEncoder architecture
@@ -81,7 +90,16 @@ class AE( nn.Module):
 #---------------------------
 
 def trainAE( data, dims, **kwargs):
-    '''
+    '''Train a sparse autoencoder
+
+    Input:
+        data: the data for training
+        dims: the dimension for your network architecture
+        L2Reg: the weight for l2 norm
+        SparsityReg: the weight for sparsity
+        SparsityPro': the target level sparsity 
+        MaxEpochs: maximum training epochs 
+        Versbose: tracking the loss or ont 
     '''
     ## Prepare for the training 
     # set the hyper-parameter 
@@ -91,20 +109,20 @@ def trainAE( data, dims, **kwargs):
     # init the model
     model = AE( dims)
     # decide optimizer 
-    optimizer = Adam( model.parameters(), lr=2e-3)
+    optimizer = Adam( model.parameters(), lr=1e-3, 
+                        weight_decay=HyperParams['L2Reg'])
     # some storages
-    loss0 = np.inf
     losses  = [] 
 
     ## Start training
-    for epoch in tqdm(range(HyperParams['MaxEpochs'])): 
+    for epoch in range(HyperParams['MaxEpochs']):
+        #tqdm(range(HyperParams['MaxEpochs'])): 
         # reshape the image
         x = torch.FloatTensor( data).view( data.shape[0], -1)
         # reconstruct x
         z, x_hat =  model( x)
         # calculate the loss 
-        loss = MSEsparse( x, x_hat, z, model, 
-                            l2_reg=HyperParams['L2Reg'], 
+        loss = MSEsparse( x, x_hat, z, 
                             spa_reg=HyperParams['SparsityReg'], 
                             p=HyperParams['SparsityPro'])
         # update
@@ -117,9 +135,6 @@ def trainAE( data, dims, **kwargs):
         if (epoch%10 ==0) and HyperParams['Verbose']:
             print( f'Epoch:{epoch}, Loss:{loss}')
         # decide if end
-        if ( loss0 - loss)**2 < 1e-6:
-            break
-        loss0 = loss 
         
     return model 
     

@@ -1,0 +1,8 @@
+# ignore vs code system file
+*.vscode 
+*.ipynb
+*.ipynb_checkpoints
+*.DS_Store 
+utils/__pycache__/
+results.zip
+__pycache__/
