@@ -35,6 +35,9 @@ fontsize = 16
 # get scale 
 img_scale  = lambda x: (x - np.min(x)) / (np.max(x) - np.min(x))
 
+#--------------------------------
+#        Visualization 
+#--------------------------------
 
 def reconstruct( data, model, ind=range(10), f=0):
     

@@ -1,15 +1,18 @@
 import os
-
 import torch
-import torch.nn as nn 
-from torch.optim import Adam
-
 import numpy as np 
 
 import matplotlib.pyplot as plt 
 from matplotlib.patches import Rectangle
-import seaborn as sns 
-from IPython.display import clear_output
+import seaborn as sns
+
+from utils.autoencoder import AE, trainAE
+
+'''
+Need to do:
+
+    Decode the latent layer.
+'''
 
 #--------------------------------
 #        System variables
@@ -35,8 +38,21 @@ sns.set_style("whitegrid", {'axes.grid' : False})
 dpi = 250
 fontsize = 16
 
+#-------------------------------
+#        Axullary functions 
+#-------------------------------
+
 # get scale 
 img_scale  = lambda x: (x - np.min(x)) / (np.max(x) - np.min(x))
+
+def loc2phi( loc):
+    '''Angle between (1, 0)
+    phi = arccos( <u, v>/||u||||v||)
+    '''
+    unit_loc = loc / np.linalg.norm(loc)
+    eign_vec = np.array( [ 1, 0])
+    dot_product = np.dot( unit_loc, eign_vec)
+    return np.arccos(dot_product)
 
 #---------------------------------
 #      Trajectory simulator
@@ -59,23 +75,43 @@ class NaviTraj:
             Winp[ i, j] ~ N( 0, 1). The
         H: a step-wise function return a binary input 
 
+        Note that due to the lack of detailed information, especially
+        how to decide whether it hits the wall, I use an approxiamte 
+        method to construct the navigation trajectory.
+
         '''
         self.rng = np.random.RandomState( seed)
         self.W_in = self.rng.randn( 300, 6)
         self.H    = lambda x: 1. * ( x > 0)
-        self.reset()
 
     def reset( self):
         '''Init the wall location 
         '''
-        self.phi   = self.rng.uniform( 0, 2*np.pi)
+        # this method if quite different from what
+        # the paper says φ ~ Uni(0, 2pi)
+        pos = self.rng.uniform( 0, 8)
+        if pos < 2:
+            loc = [ -1+pos, -1] # South ( x, -1)
+            self.wallortho = np.pi/2
+        elif pos < 4:
+            loc = [  1, -3+pos] # East  (  1, x)
+            self.wallortho = np.pi
+        elif pos < 6:
+            loc = [ -5+pos,  1] # North ( x,  1)
+            self.wallortho = 3 * np.pi/2
+        else:
+            loc = [ -1, -7+pos] # West  ( -1, x)
+            self.wallortho = 0
+        self.loc  = loc
+        self.phi = loc2phi( self.loc)
         self.theta = 0 
         self.d     = 0 
+        return loc
 
     def towards( self):
         '''Heading from the wall
         '''
-        self.theta = self.rng.uniform( -np.pi/2, np.pi)
+        self.theta = self.rng.uniform( -np.pi/2, np.pi/2)
 
     def step( self, t):
         '''step fowards
@@ -92,7 +128,10 @@ class NaviTraj:
               cos(phi),   sin(phi) ]
         '''
         d = .1 * t
-        return np.array( [ np.cos( 2*np.pi*d / np.sqrt(8)), np.sin( 2*np.pi*d / np.sqrt(8)),
+        ang = self.wallortho + self.theta
+        self.loc += np.array( [ .1*np.cos( ang), .1*np.sin(ang)])
+        self.loc = np.clip( self.loc, -1, 1)
+        return self.loc, np.array( [ np.cos( 2*np.pi*d / np.sqrt(8)), np.sin( 2*np.pi*d / np.sqrt(8)),
                            np.cos( self.theta), np.sin( self.theta),
                            np.cos( self.phi), np.sin( self.phi)])
 
@@ -115,203 +154,105 @@ class NaviTraj:
         '''
         # Storages
         traj = [] 
+        X, Y = [], [] 
 
         # repeat 500 trajectories 
+        fig, ax = plt.subplots( 1, 1, figsize=(5,5))
         for _ in range(N):
             # sample the heading direction
             done, t = False, 0
+            loc = self.reset()
             self.towards()
+            X.append( loc[0])
+            Y.append( loc[1])
+            if Verbose:
+                self.render( ax, X, Y)
             # move ahead util reach the wall
             while not done: 
                 t += 1
-                traj.append( self.step( t))
+                loc, state = self.step( t)
+                if self.hit_wall():
+                    X.append( np.nan)
+                    Y.append( np.nan)
+                    break 
+                X.append( loc[0])
+                Y.append( loc[1])
+                traj.append( state)
                 # visualize the env
                 if Verbose:
-                    clear_output(True)
-                    room = Rectangle( (-1, -1), 
-                                        2,  2,
-                                        linewidth=1,
-                                        edgecolor='r',
-                                        facecolor='none')
-                # check if reach the wall 
-                if self.hitwall():
-                    done = True 
-        
-        return np.vstack( traj)
+                    self.render( ax, X, Y)
+                #check if reach the wall 
+        # save trajectories
+        self.render( ax, X, Y)
+        plt.savefig( f'figures/trajectories.png')
+        return traj
+    
+    def hit_wall( self):
+        return np.max(abs(self.loc))>=1
+
+    def render(self, ax, X, Y):
+        ax.plot( X, Y, color=Red)
+        room = Rectangle( (-1.01, -1.01), 
+                            2.02,  2.02,
+                            linewidth=2,
+                            edgecolor=Blue,
+                            facecolor='none')
+        ax.add_patch( room)
+        ax.set_axis_off()
 
     def state2obs( self, state):
         '''State to observation
             Shape: [?. 6] x [ 6, 300] = [?, 300] 
         '''
         return self.H( state @ self.W_in.T)
-        
+
 #--------------------------------
-#        Hyperparameters
+#        Visualization 
 #--------------------------------
 
-DefaultParams = { 
-                'MaxEpochs': 15,
-                'L2Reg': 1e-5,
-                'SparsityReg': 5,
-                'SparsityPro': .1,
-                'Verbose': True,
-                'BatchSize': 32,
-                'If_gpu': True, 
-                } 
-eps_ = 1e-8
+def decode_Z( model, z_dim, ind=range(25)):
 
-#---------------------------------
-#    AutoEncoder architecture
-#---------------------------------
-
-class AE( nn.Module):
-
-    def __init__(self, dims, gpu=False):
-        super().__init__()
-        # choose device 
-        if gpu and torch.cuda.is_available():
-            self.device = 'cuda:0'
-        else:
-            self.device = 'cpu'
-        # construct encoder 
-        encoder = [] 
-        for i in range(len(dims)-1):
-            encoder.append( nn.Linear( dims[i], dims[i+1]))
-            encoder.append( nn.Sigmoid())
-        self.encoder = nn.Sequential( *encoder).to(self.device)
-        # construct decoder, reverse the encoder operation
-        re_dims = list(reversed(dims))
-        decoder = [] 
-        for i in range(len(dims)-1):
-            decoder.append( nn.Linear( re_dims[i], re_dims[i+1]))
-            decoder.append( nn.Sigmoid())
-        self.decoder = nn.Sequential( *decoder).to(self.device)
-        
-    def forward( self, x):
-        z = self.encoder(x)
-        x_hat = self.decoder(z)
-        return z, x_hat
-
-    def encode( self, x):
-        '''Encode for test only
-        '''
-        with torch.no_grad():
-            return self.encoder(x)
-
-    def decode( self, z):
-        '''Decode for test only
-        '''
-        with torch.no_grad():
-            return self.decoder(z)
-
-    def MSEsparse( self, x, x_hat, z, spa_reg=5, p=.1):
-        '''Mean sqaure error sparse
-
-        Error = 1/N ∑_i∑_j (x_ij - x_hat_ij)^2  
-                    + β1 l2norm(W)
-                    + β2 Sparity
-        
-        Note that l2 regularize can be implemented
-        in the optimizer using weight decay:
-        https://pytorch.org/docs/stable/optim.html
-
-        '''
-        mse = (x - x_hat).pow(2).sum(1).mean()
-        sparsity = self.SparsityLoss( z, p)
-        return mse + spa_reg*sparsity
-
-    def SparsityLoss( self, z, p_tar):
-        '''
-        The supplementary material of the Benna and Fusi 2021 says:
-            "The level of activate is esimated by binarized the 
-                latent representation by the threshold = 0.5"
-
-        We use the binary value to estimate the activate 
-        proportion: p_hat  = 1/N ∑_i Z_i(x)
-
-        Reference
-        https://web.stanford.edu/class/cs294a/sparseAutoencoder.pdf
-        '''
-        # get the target tesnor 
-        rho_hat = z.mean(dim=1)
-        rho     = (torch.ones_like( rho_hat) * p_tar).to(self.device)
-
-        # calculate kld 
-        kld1 = rho * ((rho).log() - (rho_hat).log())
-        kld2 = (1-rho) * ((1-rho).log() - (1-rho_hat).log())
-        return (kld1 + kld2).sum()
-
-#---------------------------
-#    Train Auto encoder 
-#---------------------------
-
-def trainAE( train_data, dims, **kwargs):
-    '''Train a sparse autoencoder
-
-    Input:
-        data: the data for training
-        dims: the dimension for your network architecture
-        L2Reg: the weight for l2 norm
-        SparsityReg: the weight for sparsity
-        SparsityPro': the target level sparsity 
-        MaxEpochs: maximum training epochs 
-        BatchSize: the number of sample in a batch for the SGD
-        Versbose: tracking the loss or ont 
-    '''
-    ## Prepare for the training 
-    # set the hyper-parameter 
-    HyperParams = DefaultParams
-    for key in kwargs.keys():
-        HyperParams[key] = kwargs[key]
-    # preprocess the data
-    x, y = train_data
-    n_batch = int( len(x))
-    x_tensor = x.type( torch.FloatTensor)
-    y_tensor = y.type( torch.FloatTensor)
-    _dataset = torch.utils.data.TensorDataset(x_tensor, y_tensor)
-    _dataloader = torch.utils.data.DataLoader( _dataset, 
-                batch_size=HyperParams['BatchSize'], drop_last=True)
-    # init model
-    model = AE( dims, gpu=HyperParams['If_gpu'])
-    # decide optimizer 
-    optimizer = Adam( model.parameters(), lr=1e-4, 
-                        weight_decay=HyperParams['L2Reg'])       
-    ## get batch_size
-    losses = []
-    
-    # start training
-    model.train()
-    for epoch in range( HyperParams['MaxEpochs']):
-
-        ## train each batch 
-        loss_ = 0        
-        for i, (x_batch, _) in enumerate(_dataloader):
-
-            # reshape the image
-            x = torch.FloatTensor( x_batch).view( 
-                x_batch.shape[0], -1).to( model.device)
-            # reconstruct x
-            z, x_hat =  model.forward( x)
-            # calculate the loss 
-            loss = model.MSEsparse( x, x_hat, z, 
-                spa_reg=HyperParams['SparsityReg'],
-                p=HyperParams['SparsityPro'])
-            # update
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            # store the te losses for plotting 
-            loss_ += loss.detach().cpu().numpy() / n_batch
-
-        # track training
-        losses.append(loss_)
-        if (epoch%1 ==0) and HyperParams['Verbose']:
-            print( f'Epoch:{epoch}, Loss:{loss_}')
-
-    return model, losses 
+    nr = 5
+    nc = 5 
+    z = np.zeros( [ len(ind), z_dim])
+    for i, idx in enumerate(ind):
+        z[ i, idx] = 1.
+    img_hat =  model.decode( torch.FloatTensor(z)
+            ).detach().cpu().numpy().reshape( [ len(ind), 20, 15])
+    fig, axs = plt.subplots( nr, nc, figsize=( nc*2.5, nr*2.5))
+    for i, idx in enumerate(ind):
+        ax = axs[ i//nr, i%nr]
+        ax.imshow(img_hat[ i, :, :], cmap='gray', vmin=.2, vmax=.8)
+        ax.set_title( f'{idx}th Latent layers')
+        ax.set_axis_off()
+     
+    fig.tight_layout()
+    plt.savefig( f'{path}/figures/Traj_decode.png')
 
 if __name__ == '__main__':
 
     # Simulate trajectory
-    rat = NaviTraj(seed=2022)
-    rat.rollout()
+    sim = NaviTraj(seed=2022)
+    traj = sim.rollout(N=500, Verbose=False)
+    data  = torch.FloatTensor(sim.state2obs( traj))
+    label = torch.FloatTensor( traj)
+    
+    ## Compress 
+    dims = [ 300, 600]
+    # Load a model. If no model, train one 
+    try:
+        model = AE( dims, gpu=False)
+        model.load_state_dict(torch.load(f'{path}/checkpts/traj_model.pkl'))
+    except:
+        print( f'Train AE....ing')
+        model, losses = trainAE( (data, label), dims, 
+                                    SparsityReg=1, SparsityPro=.03,
+                                    L2Reg=0, if_gpu=True)
+        torch.save( model.state_dict(), f'{path}/checkpts/traj_model.pkl')
+
+    ## Visualize
+    model.to('cpu') 
+    model.eval()
+    rng = np.random.RandomState( 2022)
+    ind = rng.choice( dims[1], size=25)
+    decode_Z( model, dims[1], ind=ind)
