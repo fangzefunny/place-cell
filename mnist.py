@@ -97,7 +97,7 @@ if __name__ == '__main__':
             model.load_state_dict(torch.load(f'{path}/checkpts/mnist_model-f={f}.pkl'))
         except:
             print( f'Train AE with sparisty={f}')
-            model, losses = trainAE( (data, label), dims, SparsityReg=f)
+            model, losses = trainAE( (data, label), dims, SparsityReg=f, if_gpu=True)
             torch.save( model.state_dict(), f'{path}/checkpts/mnist_model-f={f}.pkl')
 
         ## Visualize

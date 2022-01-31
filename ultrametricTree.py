@@ -32,7 +32,7 @@ fontsize = 16
 
 Need more information from the paper
 '''
-corr = lambda x: x
+corr = lambda x: x**2
 
 #----------------------------
 #     Ultrametric trees 
@@ -98,7 +98,7 @@ def fig_2b( seed=2020):
             model.eval()
             z = model.encoder( torch.FloatTensor(test_data)
                     ).detach().cpu().numpy()
-            AE_corr.append( corr( z[0,:], z[1,:])
+            AE_corr.append( corr( z[0,:], z[1,:]))
         #AE_corrs.append( np.mean(AE_corr))
     print( IN_corrs)
     print( AE_corrs)
@@ -113,28 +113,5 @@ def fig_2b( seed=2020):
 
 if __name__ == '__main__':
 
-    ## Get Mnist data 
-    
-
     ## Compress 
-    dims = [ 784, 196]
-    for f in [ 0, 3]:
-
-        ## Load a model. If no model, train one 
-        try:
-            model = AE( dims, gpu=False)
-            model.load_state_dict(torch.load(f'{path}/checkpts/mnist_model-f={f}.pkl'))
-        except:
-            print( f'Train AE with sparisty={f}')
-            model, losses = trainAE( (data, label), dims, SparsityReg=f)
-            torch.save( model.state_dict(), f'{path}/checkpts/mnist_model-f={f}.pkl')
-
-        ## Visualize
-        model.to('cpu') 
-        model.eval()
-        rng = np.random.RandomState( 2022)
-        ind = rng.choice( data.shape[0], size=10)
-        reconstruct( data, model, ind=ind, f=f)
-        ind = rng.choice( 196, size=25)
-        decode_Z( model, 196, ind=ind, f=f)
-
+    fig_2b()
