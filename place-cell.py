@@ -1,7 +1,150 @@
+import os
+
 import torch
 import torch.nn as nn 
 from torch.optim import Adam
 
+import numpy as np 
+
+import matplotlib.pyplot as plt 
+from matplotlib.patches import Rectangle
+import seaborn as sns 
+from IPython.display import clear_output
+
+#--------------------------------
+#        System variables
+#--------------------------------
+
+# find the current path
+path = os.path.dirname(os.path.abspath(__file__))
+if not os.path.exists(f'{path}/figures'):
+    os.mkdir(f'{path}/figures')
+if not os.path.exists(f'{path}/checkpts'):
+    os.mkdir(f'{path}/checkpts')
+
+# define some color 
+Blue    = .85 * np.array([   9, 132, 227]) / 255
+Green   = .85 * np.array([   0, 184, 148]) / 255
+Red     = .85 * np.array([ 255, 118, 117]) / 255
+Yellow  = .85 * np.array([ 253, 203, 110]) / 255
+Purple  = .85 * np.array([ 108,  92, 231]) / 255
+colors    = [ Blue, Red, Green, Yellow, Purple]
+sns.set_style("whitegrid", {'axes.grid' : False})
+
+# image dpi
+dpi = 250
+fontsize = 16
+
+# get scale 
+img_scale  = lambda x: (x - np.min(x)) / (np.max(x) - np.min(x))
+
+#---------------------------------
+#      Trajectory simulator
+#---------------------------------
+
+class NaviTraj:
+
+    def __init__( self, seed=42):
+        '''2D straight-line navigaqtion trajectory generator
+
+        Reference: 
+        https://www.pnas.org/content/suppl/2021/12/16/2018422118.DCSupplemental
+
+       
+        Sensory input x:
+
+        x = H( W_in @ x.T)
+
+        W_in: This l is projected to a random projector W_in 300 x 6 matrix
+            Winp[ i, j] ~ N( 0, 1). The
+        H: a step-wise function return a binary input 
+
+        '''
+        self.rng = np.random.RandomState( seed)
+        self.W_in = self.rng.randn( 300, 6)
+        self.H    = lambda x: 1. * ( x > 0)
+        self.reset()
+
+    def reset( self):
+        '''Init the wall location 
+        '''
+        self.phi   = self.rng.uniform( 0, 2*np.pi)
+        self.theta = 0 
+        self.d     = 0 
+
+    def towards( self):
+        '''Heading from the wall
+        '''
+        self.theta = self.rng.uniform( -np.pi/2, np.pi)
+
+    def step( self, t):
+        '''step fowards
+        
+        Any point s in the 2D space can be decided by 3-tuple
+        phi: the starting position. Defined 
+            as the angle between a fixed direction(East)
+        theta: the moving direction. Defined as 
+            the angle with respect to the starting wall
+        d: the distance travelled since the last wall contact.
+
+        s = [ cos(2πd/sqrt(8)), sin(2πd/sqrt(8)),
+              cos(theta), sin(theta),
+              cos(phi),   sin(phi) ]
+        '''
+        d = .1 * t
+        return np.array( [ np.cos( 2*np.pi*d / np.sqrt(8)), np.sin( 2*np.pi*d / np.sqrt(8)),
+                           np.cos( self.theta), np.sin( self.theta),
+                           np.cos( self.phi), np.sin( self.phi)])
+
+    def rollout( self, N=500, Verbose=False):
+        '''Generate the true trajectory
+
+        Input:
+            N: number of trajectory
+            Verbose: visualize the environment of not 
+
+        Each session contains 500 trajectories.
+        For each trajectory:
+            An initial position is sampled.
+                phi ~ Uniform( 0, 2*pi)
+            A heading function is sampled
+                theta ~ [ -pi/2, pi/2]
+            While not reach wall:
+                Increase the distance
+                    d += 1 
+        '''
+        # Storages
+        traj = [] 
+
+        # repeat 500 trajectories 
+        for _ in range(N):
+            # sample the heading direction
+            done, t = False, 0
+            self.towards()
+            # move ahead util reach the wall
+            while not done: 
+                t += 1
+                traj.append( self.step( t))
+                # visualize the env
+                if Verbose:
+                    clear_output(True)
+                    room = Rectangle( (-1, -1), 
+                                        2,  2,
+                                        linewidth=1,
+                                        edgecolor='r',
+                                        facecolor='none')
+                # check if reach the wall 
+                if self.hitwall():
+                    done = True 
+        
+        return np.vstack( traj)
+
+    def state2obs( self, state):
+        '''State to observation
+            Shape: [?. 6] x [ 6, 300] = [?, 300] 
+        '''
+        return self.H( state @ self.W_in.T)
+        
 #--------------------------------
 #        Hyperparameters
 #--------------------------------
@@ -13,7 +156,7 @@ DefaultParams = {
                 'SparsityPro': .1,
                 'Verbose': True,
                 'BatchSize': 32,
-                'If_gpu': False, 
+                'If_gpu': True, 
                 } 
 eps_ = 1e-8
 
@@ -114,7 +257,6 @@ def trainAE( train_data, dims, **kwargs):
         MaxEpochs: maximum training epochs 
         BatchSize: the number of sample in a batch for the SGD
         Versbose: tracking the loss or ont 
-        If_gpu: If we want to use gpu
     '''
     ## Prepare for the training 
     # set the hyper-parameter 
@@ -143,7 +285,7 @@ def trainAE( train_data, dims, **kwargs):
 
         ## train each batch 
         loss_ = 0        
-        for _, (x_batch, _) in enumerate(_dataloader):
+        for i, (x_batch, _) in enumerate(_dataloader):
 
             # reshape the image
             x = torch.FloatTensor( x_batch).view( 
@@ -167,3 +309,9 @@ def trainAE( train_data, dims, **kwargs):
             print( f'Epoch:{epoch}, Loss:{loss_}')
 
     return model, losses 
+
+if __name__ == '__main__':
+
+    # Simulate trajectory
+    rat = NaviTraj(seed=2022)
+    rat.rollout()

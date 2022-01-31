@@ -25,6 +25,16 @@ dpi = 250
 fontsize = 16
 
 #----------------------------
+#     Correlation metric  
+#---------------------------
+
+'''Unknown metric to us
+
+Need more information from the paper
+'''
+corr = lambda x: x
+
+#----------------------------
 #     Ultrametric trees 
 #---------------------------
 
@@ -65,7 +75,7 @@ def fig_2b( seed=2020):
     dims = [ 300, 600]
     IN_corrs = []
     AE_corrs = []
-    M, N = 100, 300
+    M, N = 2000, 300
     gamma = .6
     for k in ks: 
         # decide the ancestor
@@ -74,21 +84,21 @@ def fig_2b( seed=2020):
         # get descent: data 
         anc = (rng.rand(p) < .5 ) * 1.
         # generate input data 
-        x = UltrametricTree_data( M, N, k, gamma, rng=rng, anc=anc)
+        sim_data = UltrametricTree_data( M, N, k, gamma, rng=rng, anc=anc)
+        train_data = torch.FloatTensor( sim_data)
+        train_label = train_data # not used, just a placeholder to use dataloader
         # train an AE
-        # model = trainAE( x, dims, 
-        #                     SparsityReg=0, SparistyPro=.1, 
-        #                     Verbose=True)
+        model = trainAE( (train_data, train_label), dims, 
+                            SparsityReg=3, SparistyPro=.1,
+                            If_gpu=True, MaxEpochs=600)
         # calculate the correlation
-        IN_corr, AE_corr = [], []
+        AE_corr = []
         for _ in  range(10*M):
-            x_test = UltrametricTree_data( 2, N, k, gamma, rng=rng, anc=anc)
-            x0, x1 = x_test[0, :], x_test[1, :]
-            # z0 = model.get_latent(x0.reshape([1,-1]))
-            # z1 = model.get_latent(x1.reshape([1,-1]))
-            IN_corr.append( np.corrcoef( x0, x1)[ 0, 1])
-            #AE_corr.append( np.corrcoef( z0, z1)[ 0, 1])
-        IN_corrs.append( np.mean(IN_corr))
+            test_data = UltrametricTree_data( 2, N, k, gamma, rng=rng, anc=anc)
+            model.eval()
+            z = model.encoder( torch.FloatTensor(test_data)
+                    ).detach().cpu().numpy()
+            AE_corr.append( corr( z[0,:], z[1,:])
         #AE_corrs.append( np.mean(AE_corr))
     print( IN_corrs)
     print( AE_corrs)
@@ -103,5 +113,28 @@ def fig_2b( seed=2020):
 
 if __name__ == '__main__':
 
+    ## Get Mnist data 
     
-    fig_2b()
+
+    ## Compress 
+    dims = [ 784, 196]
+    for f in [ 0, 3]:
+
+        ## Load a model. If no model, train one 
+        try:
+            model = AE( dims, gpu=False)
+            model.load_state_dict(torch.load(f'{path}/checkpts/mnist_model-f={f}.pkl'))
+        except:
+            print( f'Train AE with sparisty={f}')
+            model, losses = trainAE( (data, label), dims, SparsityReg=f)
+            torch.save( model.state_dict(), f'{path}/checkpts/mnist_model-f={f}.pkl')
+
+        ## Visualize
+        model.to('cpu') 
+        model.eval()
+        rng = np.random.RandomState( 2022)
+        ind = rng.choice( data.shape[0], size=10)
+        reconstruct( data, model, ind=ind, f=f)
+        ind = rng.choice( 196, size=25)
+        decode_Z( model, 196, ind=ind, f=f)
+
