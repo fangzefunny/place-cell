@@ -54,6 +54,24 @@ def loc2phi( loc):
     dot_product = np.dot( unit_loc, eign_vec)
     return np.arccos(dot_product)
 
+def to_grid( loc):
+    loc_abs = loc - np.array( [ -1, -1])
+    return ( loc_abs * 10).astype(int)
+
+def flat_meshgrid( mesh):
+    traj = [] 
+    for i in mesh.keys():
+        for j in mesh[i].keys():
+            traj.append( np.array(mesh[i][j]).reshape([-1,6]))
+    return np.concatenate( traj, axis=0)
+
+def norm_discrete( x, bins=21*21):
+    '''
+    '''
+    x_dn = np.histogram( x, bins=bins)[0] / bins 
+    n = int(np.sqrt(bins))
+    return x_dn.reshape( [n, n])
+    
 #---------------------------------
 #      Trajectory simulator
 #---------------------------------
@@ -102,16 +120,10 @@ class NaviTraj:
         else:
             loc = [ -1, -7+pos] # West  ( -1, x)
             self.wallortho = 0
-        self.loc  = loc
-        self.phi = loc2phi( self.loc)
-        self.theta = 0 
-        self.d     = 0 
-        return loc
-
-    def towards( self):
-        '''Heading from the wall
-        '''
+        self.loc   = loc
+        self.phi   = loc2phi( self.loc)
         self.theta = self.rng.uniform( -np.pi/2, np.pi/2)
+        self.d     = 0 
 
     def step( self, t):
         '''step fowards
@@ -129,13 +141,13 @@ class NaviTraj:
         '''
         d = .1 * t
         ang = self.wallortho + self.theta
-        self.loc += np.array( [ .1*np.cos( ang), .1*np.sin(ang)])
-        self.loc = np.clip( self.loc, -1, 1)
+        if t > 0:
+            self.loc += np.array( [ .1*np.cos( ang), .1*np.sin(ang)])
         return self.loc, np.array( [ np.cos( 2*np.pi*d / np.sqrt(8)), np.sin( 2*np.pi*d / np.sqrt(8)),
                            np.cos( self.theta), np.sin( self.theta),
                            np.cos( self.phi), np.sin( self.phi)])
 
-    def rollout( self, N=500, Verbose=False):
+    def rollout( self, N=500, Verbose=False, mode='train'):
         '''Generate the true trajectory
 
         Input:
@@ -155,37 +167,39 @@ class NaviTraj:
         # Storages
         traj = [] 
         X, Y = [], [] 
+        meshgrid = { i: { j: [] for j in range(21)} for i in range(21)}
 
         # repeat 500 trajectories 
         fig, ax = plt.subplots( 1, 1, figsize=(5,5))
         for _ in range(N):
             # sample the heading direction
             done, t = False, 0
-            loc = self.reset()
-            self.towards()
-            X.append( loc[0])
-            Y.append( loc[1])
-            if Verbose:
-                self.render( ax, X, Y)
-            # move ahead util reach the wall
+            self.reset()
             while not done: 
-                t += 1
-                loc, state = self.step( t)
-                if self.hit_wall():
+                loc, state = self.step(t)
+                if (t>0) and (self.hit_wall()):
                     X.append( np.nan)
                     Y.append( np.nan)
                     break 
+                cat = to_grid( loc)
+                # note that put the col idx 
+                # prior to the row idx because
+                # of python's reshape direction is row 
+                meshgrid[cat[1]][cat[0]].append( state)
                 X.append( loc[0])
                 Y.append( loc[1])
                 traj.append( state)
-                # visualize the env
                 if Verbose:
                     self.render( ax, X, Y)
-                #check if reach the wall 
+                t += 1
+
         # save trajectories
         self.render( ax, X, Y)
         plt.savefig( f'figures/trajectories.png')
-        return traj
+        if mode == 'train':
+            return np.vstack(traj)
+        elif mode == 'test':
+            return meshgrid
     
     def hit_wall( self):
         return np.max(abs(self.loc))>=1
@@ -210,36 +224,50 @@ class NaviTraj:
 #        Visualization 
 #--------------------------------
 
-def decode_Z( model, z_dim, ind=range(25)):
+def spatial_tuning( data, model, z_dim, seed=42):
+    '''Spatial tuning analysis
 
-    nr = 5
-    nc = 5 
-    z = np.zeros( [ len(ind), z_dim])
-    for i, idx in enumerate(ind):
-        z[ i, idx] = 1.
-    img_hat =  model.decode( torch.FloatTensor(z)
-            ).detach().cpu().numpy().reshape( [ len(ind), 20, 15])
+    The supplementary material of the Benna and Fusi 2021 says:
+        - "we construct maps of the cumulative activity of 
+          individual hidden-layer units"
+        - "normalize them by the total occupancy of each 
+          21x 21 spatial bins." 
+        - "smooth them by convoling a Gaussian filter of width one bin"
+        - "excluding the transient learning period that occurs during
+           the first 20 sessions"
+    '''
+    ## Setup some hyper values
+    nr = nc = 6 
+    rng = np.random.RandomState(seed)
+    ind = rng.choice( z_dim, size=nr*nc)
+    
     fig, axs = plt.subplots( nr, nc, figsize=( nc*2.5, nr*2.5))
     for i, idx in enumerate(ind):
+        ## Get cumulative activity of each units 
+        z, _ = model( data)
+        latent = z.detach().cpu().numpy()
+        # get cumulative data 
+        spatial_z = norm_discrete( latent[ :, idx])
+        # 
         ax = axs[ i//nr, i%nr]
-        ax.imshow(img_hat[ i, :, :], cmap='gray', vmin=.2, vmax=.8)
+        ax.imshow(spatial_z)
         ax.set_title( f'{idx}th Latent layers')
         ax.set_axis_off()
-     
+
     fig.tight_layout()
-    plt.savefig( f'{path}/figures/Traj_decode.png')
+    plt.savefig( f'{path}/figures/Spa_tuning.png')
 
 if __name__ == '__main__':
 
     # Simulate trajectory
-    sim = NaviTraj(seed=2022)
-    traj = sim.rollout(N=500, Verbose=False)
-    data  = torch.FloatTensor(sim.state2obs( traj))
-    label = torch.FloatTensor( traj)
+    navi  = NaviTraj( seed=2022)
+    traj  = navi.rollout( N=500, Verbose=False)
+    data  = torch.FloatTensor( navi.state2obs( traj))
+    label = torch.FloatTensor( traj) #just a placeholder to use the dataloader
     
     ## Compress 
     dims = [ 300, 600]
-    # Load a model. If no model, train one 
+    #Load a model. If no model, train one 
     try:
         model = AE( dims, gpu=False)
         model.load_state_dict(torch.load(f'{path}/checkpts/traj_model.pkl'))
@@ -251,8 +279,11 @@ if __name__ == '__main__':
         torch.save( model.state_dict(), f'{path}/checkpts/traj_model.pkl')
 
     ## Visualize
+    # speed up by turning on the test mode
     model.to('cpu') 
     model.eval()
-    rng = np.random.RandomState( 2022)
-    ind = rng.choice( dims[1], size=25)
-    decode_Z( model, dims[1], ind=ind)
+    # spatial tunning property
+    navi  = NaviTraj( seed=2022)
+    traj  = navi.rollout( N=500, Verbose=False, mode='train')
+    test_data  = torch.FloatTensor( navi.state2obs( traj))
+    spatial_tuning( test_data, model, navi, 600, seed=2020)

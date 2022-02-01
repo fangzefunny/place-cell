@@ -79,13 +79,6 @@ class AE( nn.Module):
 
     def SparsityLoss( self, z, p_tar):
         '''
-        The supplementary material of the Benna and Fusi 2021 says:
-            "The level of activate is esimated by binarized the 
-                latent representation by the threshold = 0.5"
-
-        We use the binary value to estimate the activate 
-        proportion: p_hat  = 1/N ∑_i Z_i(x)
-
         Reference
         https://web.stanford.edu/class/cs294a/sparseAutoencoder.pdf
         '''
