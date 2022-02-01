@@ -92,7 +92,7 @@ if __name__ == '__main__':
 
     ## Compress 
     dims = [ 784, 196]
-    for f in [ 0, 3]:
+    for f in [ 3]:
 
         ## Load a model. If no model, train one 
         try:
