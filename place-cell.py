@@ -1,5 +1,4 @@
 import os
-from tabnanny import verbose
 import scipy as sp
 import torch
 import numpy as np 
@@ -7,6 +6,7 @@ from scipy.signal import convolve2d
 
 import matplotlib.pyplot as plt 
 from matplotlib.patches import Rectangle
+from torchvision.utils import make_grid
 import seaborn as sns
 
 from utils.autoencoder import AE, trainAE
@@ -40,13 +40,14 @@ sns.set_style("whitegrid", {'axes.grid' : False})
 # image dpi
 dpi = 250
 fontsize = 16
+eps_ = 1e-12
 
 #-------------------------------
 #        Axullary functions 
 #-------------------------------
 
 # get scale 
-img_scale  = lambda x: (x - np.min(x)) / (np.max(x) - np.min(x))
+img_scale  = lambda x: (x - torch.min(x)) / (torch.max(x) - torch.min(x))
 
 # max N 
 argmaxN = lambda arr, n: (-arr).argsort()[:n]
@@ -193,7 +194,7 @@ class NaviTraj:
         m2 = { i: { j: [] for j in range(21)} for i in range(21)}
 
         # repeat 500 trajectories
-        if verbose: 
+        if Verbose: 
             fig, ax = plt.subplots( 1, 1, figsize=(5,5))
         for _ in range(N):
             # sample the heading direction
@@ -223,7 +224,7 @@ class NaviTraj:
         # save trajectories
         # plt.savefig( f'figures/traj-{sess}.png') 
 
-        return np.vstack(traj), meshgrid
+        return np.vstack(traj), meshgrid, m2
 
     
     def hit_wall( self):
@@ -243,7 +244,7 @@ class NaviTraj:
 #         Spatial tuning 
 #--------------------------------
 
-def spatial_field( test_data, model, sensor, z_dim):
+def spatial_field( spaSen, model, sensor, z_dim):
     '''Spatial tuning analysis
 
     The supplementary material of the Benna and Fusi 2021 says:
@@ -255,14 +256,15 @@ def spatial_field( test_data, model, sensor, z_dim):
         - 
     '''
     spa_tuning = np.zeros( [ 21, 21, z_dim])
-    for i in test_data.keys():
-        for j in test_data[i].keys():
-            if len(test_data[i][j]):
-                in_data = np.vstack( test_data[i][j])
+    for i in spaSen.keys():
+        for j in spaSen[i].keys():
+            if len(spaSen[i][j]):
+                in_data = np.vstack( spaSen[i][j])
                 x = sensor.state2obs( in_data)
                 z = model.encode( torch.FloatTensor(x)
                     ).detach().cpu().numpy().sum(0)
-                spa_tuning[ i, j, :] = z 
+                spa_tuning[ i, j, :] = z
+    spa_tuning += eps_
     return spa_tuning / spa_tuning.sum(2, keepdims=True)
 
 def spatial_tuning( field_all, ind):
@@ -271,7 +273,7 @@ def spatial_tuning( field_all, ind):
     ## Setup some hyper values
     nr = nc = 6 
     fig, axs = plt.subplots( nr, nc, figsize=( nc*2.5, nr*2.5))
-    ind = argmaxN( field_all.sum(1).sum(0), 36)
+    #ind = argmaxN( field_all.sum(1).sum(0), 36)
     for i, idx in enumerate(ind):
         # get cumulative activity of each units
         tuning = field_all[ :, :, idx]
@@ -282,52 +284,105 @@ def spatial_tuning( field_all, ind):
         ax.set_title( f'{idx}th Latent layers')
         ax.set_axis_off()
     fig.tight_layout()
-    plt.savefig( f'{path}/figures/Spa_tuning.png')
+
+def inspect_hidden( spaSen):
+    '''Look into the hidden layers
+    '''
+    ## Setup some hyper values
+    plt.figure(figsize=(20,30))
+    grid = torch.zeros( 21*21, 1, 30 ,20)
+    for i in spaSen.keys():
+        for j in spaSen[i].keys():
+            if len(spaSen[i][j]):
+                in_data = np.vstack( spaSen[i][j])
+                x = sensor.state2obs( in_data)
+                z = model.encode( torch.FloatTensor(x)
+                    ).cpu().sum(0).view([30, 20])
+                grid[ i*21+j, 0, :, :] = z
+    plt.imshow( make_grid( img_scale(grid), nrow=21, padding=1
+                    ).permute(1,2,0)[:,:,0], cmap='viridis')
+    plt.axis('off')
+    plt.tight_layout()
+
+def viz_space( spaRaw):
+    '''Look into the hidden layers
+    '''
+    ## Setup some hyper values
+    fig, axs = plt.subplots( 21,21, figsize=(21,21))
+    for i in spaSen.keys():
+        for j in spaSen[i].keys():
+            ax = axs[i,j]
+            if len(spaSen[i][j]):
+                spa_data = np.vstack( spaRaw[i][j])
+                ax.scatter( spa_data[:,0], spa_data[:,1],
+                                color='r', edgecolors=[1.,1.,1.])
+            ax.set_xlim([-1,1])
+            ax.set_ylim([-1,1])
+            ax.set_xticks([])
+            ax.set_yticks([])
+    plt.tight_layout()
+   
 
 if __name__ == '__main__':
 
-    # Simulate trajectory
+    #-----------   Train Option   --------------
     seed = 2022
-    
-    ## Compress 
     dims = [ 300, 600]
-    train = False
+    train = True
+    spa_reg = [ 0, 1.5]
+    m_names = [ 'AE', 'SAE']
     tot_Sess = 60
+    warmup = 40
+    #-------------------------------------------
+
+    ## Init Training 
     sensor = Sensory( seed)
     ind = np.random.RandomState(seed).choice( dims[-1], size=36)
     model = AE( dims, gpu=True)
 
-    #Load a model. If no model, train one 
-    if train:
-        for s in range(tot_Sess):
-            seed += 1 
-            print( f'Train AE @ Session: {s}; Seed:{seed}')
-            traj, _  = NaviTraj( seed).rollout( s, N=500, Verbose=False)
-            data  = torch.FloatTensor( sensor.state2obs( traj))
-            label = torch.FloatTensor( traj) #just a placeholder to use the dataloader
-            model, losses = trainAE( (data, label), model, LR=1e-3,
-                                        SparsityReg=1, SparsityPro=.03,
-                                        L2Reg=0, if_gpu=True, BatchSize=32,
-                                        MaxEpochs=15)
-            if s >=19:
-                # "excluding the transient learning period that occurs during the first 20 sessions"
-                torch.save( model.state_dict(), f'{path}/checkpts/traj_model-S{s}.pkl')
-                
-    ## Visualize
-    field_all = np.zeros( [ 21, 21, dims[-1]])
-    seed = 2022 + 19
-    for s in range( 19, tot_Sess):  
-        seed += 1
-        print( f'Test AE @ Session: {s}; Seed:{seed}')  
-        model = AE( dims, gpu=False)
-        model.load_state_dict(torch.load(f'{path}/checkpts/traj_model-S{s}.pkl'))
-        model.to('cpu') 
-        model.eval()
-        # spatial tunning property
-        _, spa  = NaviTraj( seed).rollout( s, N=500, Verbose=False)
-        field_all += spatial_field( spa, model, sensor, dims[-1]) / 40
+    ## Load a model. If there is no model, train one 
+    for sr, m_name in zip(spa_reg, m_names):
+       
+        ## Train 
+        if train:
+            
+            # check if the github folder exists
+            if not os.path.exists(f'{path}/checkpts/{m_name}'):
+                os.mkdir(f'{path}/checkpts/{m_name}')
 
-    # average over trial
-    spatial_tuning( field_all, ind)
-            
-            
+            for s in range(tot_Sess):
+                seed += 1 
+                torch.manual_seed(seed)
+                print( f'Train {m_name} @ Session: {s}; Seed:{seed}')
+                traj, _, _  = NaviTraj( seed).rollout( s, N=500, Verbose=False)
+                data  = torch.FloatTensor( sensor.state2obs( traj))
+                label = torch.FloatTensor( traj) #just a placeholder to use the dataloader
+                model, losses = trainAE( (data, label), model, LR=1e-3,
+                                            SparsityReg=sr, SparsityPro=.03,
+                                            L2Reg=0, if_gpu=True, BatchSize=64,
+                                            MaxEpochs=10)
+                if s >= warmup:
+                    # "excluding the transient learning period that occurs during the first 20 sessions"
+                    torch.save( model.state_dict(), f'{path}/checkpts/{m_name}/traj_-S{s}.pkl')
+                    
+        ## Visualize
+        field_all = np.zeros( [ 21, 21, dims[-1]])
+        seed = 2022 + warmup
+        for s in range( warmup, tot_Sess):  
+            seed += 1
+            print( f'Test {m_name} @ Session: {s}; Seed:{seed}')  
+            model = AE( dims, gpu=False)
+            model.load_state_dict(torch.load(f'{path}/checkpts/{m_name}/traj_-S{s}.pkl'))
+            model.to('cpu') 
+            model.eval()
+            # spatial tunning property
+            _, spaSen, spaRaw  = NaviTraj( seed).rollout( s, N=500, Verbose=False)
+            field_all += spatial_field( spaSen, model, sensor, dims[-1]) / (tot_Sess-warmup+1)
+
+        # average over trial
+        spatial_tuning( field_all, ind)
+        plt.savefig( f'{path}/figures/Spa_tuning-{m_name}.png')
+        inspect_hidden( spaSen)
+        plt.savefig( f'{path}/figures/hidden-{m_name}.png', dpi=250)
+        viz_space( spaRaw)
+        plt.savefig( f'{path}/figures/spa_data-{m_name}.png', dpi=250)

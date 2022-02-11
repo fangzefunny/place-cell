@@ -88,11 +88,11 @@ class AE( nn.Module):
         '''
         # get the target tesnor 
         rho_hat = z.mean(dim=0)
-        rho     = (torch.ones_like( rho_hat) * p_tar).to(self.device)
+        rho     = p_tar#(torch.ones_like( rho_hat) * p_tar).to(self.device)
 
         # calculate kld 
-        kld1 = rho * (rho/rho_hat).log()
-        kld2 = (1-rho) * ((1-rho)/(1-rho_hat)).log()
+        kld1 = rho * (rho/(rho_hat+eps_)+eps_).log()
+        kld2 = (1-rho) * ((1-rho)/(1-rho_hat+eps_)+eps_).log()
         return (kld1 + kld2).sum()
 
 #---------------------------
