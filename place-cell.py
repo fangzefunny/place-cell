@@ -265,18 +265,19 @@ def spatial_field( spaSen, model, sensor, z_dim):
                     ).detach().cpu().numpy().sum(0)
                 spa_tuning[ i, j, :] = z
     spa_tuning += eps_
-    return spa_tuning / spa_tuning.sum(2, keepdims=True)
+    return spa_tuning 
 
 def spatial_tuning( field_all, ind):
     '''Spatial tuning analysis
     '''
     ## Setup some hyper values
+    field_all /= field_all.sum(2, keepdims=True)
     nr = nc = 6 
     fig, axs = plt.subplots( nr, nc, figsize=( nc*2.5, nr*2.5))
     #ind = argmaxN( field_all.sum(1).sum(0), 36)
     for i, idx in enumerate(ind):
         # get cumulative activity of each units
-        tuning = field_all[ :, :, idx]
+        tuning = field_all[ :, :, idx] 
         # convolve with a one bin gaussian filter
         tuning_smooth = smooth( tuning)
         ax = axs[ i//nr, i%nr]
@@ -357,7 +358,7 @@ if __name__ == '__main__':
                 traj, _, _  = NaviTraj( seed).rollout( s, N=500, Verbose=False)
                 data  = torch.FloatTensor( sensor.state2obs( traj))
                 label = torch.FloatTensor( traj) #just a placeholder to use the dataloader
-                model, losses = trainAE( (data, label), model, LR=1e-3,
+                model, losses = trainAE( (data, label), model, LR=5e-4,
                                             SparsityReg=sr, SparsityPro=.03,
                                             L2Reg=0, if_gpu=True, BatchSize=64,
                                             MaxEpochs=10)
