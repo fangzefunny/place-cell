@@ -7,6 +7,7 @@ import torch.nn as nn
 #--------------------------------
 
 DefaultParams = { 
+                'LR': 1e-4,
                 'MaxEpochs': 15,
                 'L2Reg': 1e-5,
                 'SparsityReg': 5,
@@ -80,34 +81,37 @@ class AE( nn.Module):
     def SparsityLoss( self, z, p_tar):
         '''
         Reference
-        https://web.stanford.edu/class/cs294a/sparseAutoencoder.pdf
+        https://www.mathworks.com/help/deeplearning/ref/trainautoencoder.html
+        
+            rho_hat = 1/M Sum_m sigmoid( W.T @ x + b) 
+                m is number of input data 
         '''
         # get the target tesnor 
-        rho_hat = z.mean(dim=1)
-        rho     = (torch.ones_like( rho_hat) * p_tar).to(self.device)
+        rho_hat = z.mean(dim=0)
+        rho     = p_tar#(torch.ones_like( rho_hat) * p_tar).to(self.device)
 
         # calculate kld 
-        kld1 = rho * ((rho).log() - (rho_hat).log())
-        kld2 = (1-rho) * ((1-rho).log() - (1-rho_hat).log())
+        kld1 = rho * (rho/(rho_hat+eps_)+eps_).log()
+        kld2 = (1-rho) * ((1-rho)/(1-rho_hat+eps_)+eps_).log()
         return (kld1 + kld2).sum()
 
 #---------------------------
 #    Train Auto encoder 
 #---------------------------
 
-def trainAE( train_data, dims, **kwargs):
+def trainAE( train_data, model, **kwargs):
     '''Train a sparse autoencoder
 
     Input:
         data: the data for training
-        dims: the dimension for your network architecture
+        model: the AE model for training 
+        LR: learning rate 
         L2Reg: the weight for l2 norm
         SparsityReg: the weight for sparsity
         SparsityPro': the target level sparsity 
         MaxEpochs: maximum training epochs 
         BatchSize: the number of sample in a batch for the SGD
         Versbose: tracking the loss or ont 
-        If_gpu: If we want to use gpu
     '''
     ## Prepare for the training 
     # set the hyper-parameter 
@@ -116,16 +120,14 @@ def trainAE( train_data, dims, **kwargs):
         HyperParams[key] = kwargs[key]
     # preprocess the data
     x, y = train_data
-    n_batch = int( len(x))
+    n_batch = int( len(x) / HyperParams['BatchSize'])
     x_tensor = x.type( torch.FloatTensor)
     y_tensor = y.type( torch.FloatTensor)
     _dataset = torch.utils.data.TensorDataset(x_tensor, y_tensor)
     _dataloader = torch.utils.data.DataLoader( _dataset, 
                 batch_size=HyperParams['BatchSize'], drop_last=True)
-    # init model
-    model = AE( dims, gpu=HyperParams['If_gpu'])
     # decide optimizer 
-    optimizer = Adam( model.parameters(), lr=1e-4, 
+    optimizer = Adam( model.parameters(), lr=HyperParams['LR'], 
                         weight_decay=HyperParams['L2Reg'])       
     ## get batch_size
     losses = []
@@ -157,6 +159,6 @@ def trainAE( train_data, dims, **kwargs):
         # track training
         losses.append(loss_)
         if (epoch%1 ==0) and HyperParams['Verbose']:
-            print( f'Epoch:{epoch}, Loss:{loss_}')
+            print( f'   Epoch:{epoch}, Loss:{loss_}')
 
     return model, losses 
